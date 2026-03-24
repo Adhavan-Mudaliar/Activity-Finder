@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SnapMoment | Search Scenes</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+    <style>
+        .video-container {
+            width: 100%;
+            max-width: 800px;
+            margin: 0 auto 3rem;
+            position: relative;
+            border-radius: 24px;
+            overflow: hidden;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+            border: 1px solid var(--glass-border);
+        }
+        video {
+            width: 100%;
+            display: block;
+            background: #000;
+        }
+        .search-container {
+            margin-bottom: 4rem;
+        }
+        .back-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: var(--text-secondary);
+            text-decoration: none;
+            margin-bottom: 2rem;
+            transition: color 0.3s;
+        }
+        .back-link:hover {
+            color: var(--accent-blue);
+        }
+        .search-info {
+            text-align: center;
+            margin-bottom: 2rem;
+            color: var(--text-secondary);
+        }
+        .search-info span {
+            color: var(--accent-blue);
+            font-weight: 600;
+        }
+    </style>
+</head>
+<body>
+    <div class="background-blobs">
+        <div class="blob blob-1"></div>
+        <div class="blob blob-2"></div>
+        <div class="blob blob-3"></div>
+    </div>
+
+    <div class="container">
+        <header>
+            <a href="index.html" class="back-link">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
+                Upload Another Video
+            </a>
+            <h1 class="logo">Snap<span>Moment</span></h1>
+            <p class="tagline">Search Scenes in Your Video</p>
+        </header>
+
+        <main>
+            <section class="video-section">
+                <div class="video-container glass">
+                    <video id="mainVideo" controls>
+                        <source id="videoSource" src="" type="video/mp4">
+                        Your browser does not support the video tag.
+                    </video>
+                </div>
+            </section>
+
+            <section class="search-container">
+                <div class="search-info">
+                    Searching in: <span id="currentVideoName">Loading...</span>
+                </div>
+                <div class="search-box glass">
+                    <input type="text" id="queryInput" placeholder="Describe a scene you're looking for...">
+                    <button id="searchBtn">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                        Search
+                    </button>
+                </div>
+            </section>
+
+            <section class="results-section">
+                <div id="loading" class="hidden">
+                    <div class="spinner"></div>
+                    <p>Analyzing video scenes...</p>
+                </div>
+                <div id="resultsGrid" class="results-grid">
+                    <!-- Results will be injected here -->
+                </div>
+            </section>
+        </main>
+
+        <footer>
+            <p>&copy; 2026 SnapMoment Offline Retrieval System</p>
+        </footer>
+    </div>
+
+    <template id="resultCardTemplate">
+        <div class="result-card glass fade-in">
+            <div class="card-header">
+                <span class="video-id">Scene Match</span>
+                <span class="score-badge">Match: 98%</span>
+            </div>
+            <div class="card-body">
+                <h3>Detected Moment</h3>
+                <div class="timestamps">
+                    <!-- Timestamps will be injected here -->
+                </div>
+            </div>
+            <div class="card-footer">
+                <button class="play-btn">Jump to Scene</button>
+            </div>
+        </div>
+    </template>
+
+    <script src="search.js"></script>
+</body>
+</html>

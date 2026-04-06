@@ -1,70 +1,63 @@
+"""
+Rebuild FAISS index from stored HDF5 frame embeddings.
+Run after first-time setup or after clearing the index.
+"""
 import os
-import torch
+import json
 import numpy as np
 from src.storage.video_embedding import VideoEmbeddingStorage
-from src.models.projection_head import ProjectionHead
-from src.models.mamba_model import MambaModel
-from src.models.attention_pooling import AttentionPooling
 from src.retrieval.faiss_index import FaissIndex
+from src.utils.metadata_manager import MetadataManager
 
-def build_index(h5_path="data/hdf5/embeddings.h5", index_path="data/metadata/faiss", model_weights_dir="weights/model"):
-    """
-    Builds the FAISS index from HDF5 embeddings with fallback to raw CLIP if weights are missing.
-    """
-    storage = VideoEmbeddingStorage(h5_path=h5_path)
+
+def build_index(h5_path="data/hdf5/embeddings.h5",
+                index_path="data/metadata/faiss"):
+    storage  = VideoEmbeddingStorage(h5_path=h5_path)
+    metadata = MetadataManager()
     video_ids = storage.list_videos()
-    
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    
-    # Check if we have weights for the advanced pipeline
-    has_weights = all(os.path.exists(os.path.join(model_weights_dir, f"{m}.pt")) 
-                           for m in ["ProjectionHead", "MambaModel", "AttentionPooling"])
-    
-    if has_weights:
-        print("🚀 Loading model weights for indexing...")
-        projection = ProjectionHead().to(device).eval()
-        mamba = MambaModel().to(device).eval()
-        pooling = AttentionPooling().to(device).eval()
-        
-        for model in [projection, mamba, pooling]:
-            model.load_state_dict(torch.load(os.path.join(model_weights_dir, f"{model.__class__.__name__}.pt"), map_location=device))
-        dimension = 256
-    index = None
+
+    if not video_ids:
+        print("No video embeddings found in HDF5. Upload and process a video first.")
+        return
+
     dimension = None
-    
+    index     = None
+
     print(f"Checking {len(video_ids)} videos for indexing...")
-    
+
     for vid_id in video_ids:
         feats = storage.get_embeddings(vid_id)
-        if feats is None: continue
-        
-        with torch.no_grad():
-            if has_weights:
-                if dimension is None:
-                    dimension = 256
-                    index = FaissIndex(dimension=dimension)
-                
-                feats_torch = torch.from_numpy(feats).float().to(device).unsqueeze(0)
-                proj_feats = projection(feats_torch)
-                temp_feats = mamba(proj_feats)
-                scene_feat, _ = pooling(temp_feats)
-                scene_feat_np = scene_feat.cpu().numpy()
-            else:
-                # Fallback: Mean pool CLIP embeddings
-                if dimension is None:
-                    dimension = feats.shape[1] # Detect from actual data (e.g. 768)
-                    index = FaissIndex(dimension=dimension)
-                    print(f"⚠️  No weights found. Using raw embeddings from storage ({dimension}-dim).")
-                
-                scene_feat_np = np.mean(feats, axis=0, keepdims=True)
-            
-        index.add_embeddings(scene_feat_np, vid_id)
-        
+        if feats is None:
+            continue
+
+        if dimension is None:
+            dimension = feats.shape[1]
+            index     = FaissIndex(dimension=dimension)
+            print(f"⚠️  Using raw CLIP embeddings ({dimension}-dim).")
+
+        # Load frame mapping to get real timestamps
+        mapping_file = os.path.join(metadata.frame_mapping_dir, f"{vid_id}_mapping.json")
+        if os.path.exists(mapping_file):
+            with open(mapping_file, "r") as f:
+                frame_mapping = json.load(f)
+            sorted_items = sorted(frame_mapping.items(), key=lambda x: x[1]["frame_idx"])
+            frame_indices = [info["frame_idx"] for _, info in sorted_items]
+            timestamps    = [info["timestamp"] for _, info in sorted_items]
+        else:
+            n = feats.shape[0]
+            frame_indices = list(range(n))
+            timestamps    = [float(i) for i in range(n)]
+
+        index.add_embeddings(feats, vid_id,
+                             frame_indices=frame_indices,
+                             timestamps=timestamps)
+
     if index:
         index.save(index_path)
-        print(f"Index saved to {index_path}")
+        print(f"✅ Index saved to {index_path} ({index.index.ntotal} total frames)")
     else:
         print("No embeddings found to index.")
+
 
 if __name__ == "__main__":
     build_index()

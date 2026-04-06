@@ -1,72 +1,97 @@
 import faiss
 import numpy as np
 import os
+from src.storage.frame_index_store import FrameIndexStore
+
 
 class FaissIndex:
-    def __init__(self, dimension=256, index_type="IVF", nlist=1):
-        """
-        Initializes FAISS index for scene embeddings.
-        Decreased default nlist to 1 for small datasets.
-        """
+    """
+    Frame-level FAISS index.
+    Each entry corresponds to a single frame embedding with its video_id and timestamp.
+    """
+
+    def __init__(self, dimension=768, index_type="Flat"):
         self.dimension = dimension
         if index_type == "IVF":
             quantizer = faiss.IndexFlatIP(dimension)
-            # Ensure nlist is not larger than data size if known, 
-            # but usually we don't know yet. Setting to 1 as safe default.
-            self.index = faiss.IndexIVFFlat(quantizer, dimension, nlist, faiss.METRIC_INNER_PRODUCT)
+            self.index = faiss.IndexIVFFlat(quantizer, dimension, 1, faiss.METRIC_INNER_PRODUCT)
         else:
             self.index = faiss.IndexFlatIP(dimension)
-            
-        self.video_ids = [] # To map index to video_id
 
-    def add_embeddings(self, embeddings, video_id):
+        self.store = FrameIndexStore()   # maps faiss position → (video_id, frame_idx, timestamp)
+
+    # ------------------------------------------------------------------
+    # legacy shim so old code that passes just video_id still works
+    @property
+    def video_ids(self):
+        return [r["video_id"] for r in self.store.records]
+    # ------------------------------------------------------------------
+
+    def add_embeddings(self, embeddings, video_id, frame_indices=None, timestamps=None):
         """
-        Adds embeddings for a video to the index.
-        embeddings: (1, dimension) or (num_scenes, dimension)
+        embeddings  : (N, D) float32 ndarray
+        video_id    : str
+        frame_indices: list[int] length N  (optional)
+        timestamps  : list[float] length N (optional)
         """
+        n = embeddings.shape[0]
+        if frame_indices is None:
+            frame_indices = list(range(n))
+        if timestamps is None:
+            timestamps = [float(i) for i in frame_indices]
+
         if not self.index.is_trained:
-            self.index.train(embeddings.astype('float32'))
-            
-        self.index.add(embeddings.astype('float32'))
-        for _ in range(embeddings.shape[0]):
-            self.video_ids.append(video_id)
+            self.index.train(embeddings.astype("float32"))
+
+        self.index.add(embeddings.astype("float32"))
+        for i in range(n):
+            self.store.add(video_id, int(frame_indices[i]), float(timestamps[i]))
 
     def search(self, query_embedding, top_k=100, video_id=None):
         """
-        Searches the index for the query.
+        Returns list of dicts: {"video_id", "frame_idx", "timestamp", "score"}
         """
-        distances, indices = self.index.search(query_embedding.astype('float32'), top_k)
-        
+        n_total = self.index.ntotal
+        if n_total == 0:
+            return []
+
+        k = min(top_k, n_total)
+        distances, indices = self.index.search(query_embedding.astype("float32"), k)
+
         results = []
-        for i, idx in enumerate(indices[0]):
-            if idx == -1: continue
-            
-            res_vid = self.video_ids[idx]
-            if video_id and res_vid != video_id:
+        for dist, idx in zip(distances[0], indices[0]):
+            if idx == -1:
                 continue
-                
+            record = self.store.get(int(idx))
+            if record is None:
+                continue
+            if video_id and record["video_id"] != video_id:
+                continue
             results.append({
-                "video_id": res_vid,
-                "score": float(distances[0][i])
+                "video_id":  record["video_id"],
+                "frame_idx": record["frame_idx"],
+                "timestamp": record["timestamp"],
+                "score":     float(dist),
             })
         return results
 
     def save(self, path):
         faiss.write_index(self.index, path + ".index")
+        self.store.save(path + "_meta.json")
+        # keep legacy _ids.txt so old code doesn't crash on load
         with open(path + "_ids.txt", "w") as f:
-            for vid in self.video_ids:
-                f.write(vid + "\n")
+            for r in self.store.records:
+                f.write(r["video_id"] + "\n")
 
     def load(self, path):
         self.index = faiss.read_index(path + ".index")
-        with open(path + "_ids.txt", "r") as f:
-            self.video_ids = [line.strip() for line in f.readlines()]
-
-if __name__ == "__main__":
-    # Test
-    # index = FaissIndex(dimension=256)
-    # data = np.random.rand(100, 256).astype('float32')
-    # index.add_embeddings(data, "test")
-    # res = index.search(np.random.rand(1, 256).astype('float32'))
-    # print(res[:5])
-    pass
+        meta_path = path + "_meta.json"
+        if os.path.exists(meta_path):
+            self.store.load(meta_path)
+        else:
+            # Fallback for old indexes that only have _ids.txt
+            ids_path = path + "_ids.txt"
+            if os.path.exists(ids_path):
+                with open(ids_path, "r") as f:
+                    for i, line in enumerate(f):
+                        self.store.add(line.strip(), i, float(i))

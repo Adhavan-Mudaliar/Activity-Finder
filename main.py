@@ -14,6 +14,9 @@ import torch
 import shutil
 import uvicorn
 
+# Fix for OMP: Error #15
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
 # Import local modules
 from src.retrieval.search import SearchEngine
 from src.utils.video_processor import VideoProcessor
@@ -35,7 +38,7 @@ from contextlib import asynccontextmanager
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global clip_encoder, engine, processor
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "mps" if torch.mps.is_available() else "cpu"
     
     print(f"Initializing Engines (Device: {device}, Offline mode)...")
     try:
@@ -129,6 +132,8 @@ app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
 
 def run_command(command, description):
     print(f"\n🚀 {description}...")
+    if command.startswith("python "):
+        command = command.replace("python ", sys.executable + " ", 1)
     result = subprocess.run(command, shell=True, env={**os.environ, "PYTHONPATH": "."})
     return result.returncode == 0
 
@@ -156,6 +161,9 @@ def main():
     print("="*40)
     
     ensure_dependencies()
+    
+    # Fix for OMP: Error #15
+    os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
     
     # Pre-flight checks
     video_path = "data/videos/testX.mp4"

@@ -4,7 +4,7 @@ from PIL import Image
 import os
 
 class CLIPEncoder:
-    def __init__(self, model_name="ViT-L-14", pretrained="openai", device="cuda" if torch.cuda.is_available() else "cpu"):
+    def __init__(self, model_name="ViT-L-14", pretrained="openai", device="mps" if torch.mps.is_available() else "cpu"):
         """
         Initializes the CLIP model. In offline mode, uses weights from weights/ dir.
         """
@@ -37,9 +37,9 @@ class CLIPEncoder:
             for param in self.model.parameters():
                 param.requires_grad = False
                 
-            # Use FP16 if on GPU
-            if device == "cuda":
-                self.model = self.model.half()
+            # Use BFloat16 if on GPU (Apple Silicon optimized)
+            if device == "mps":
+                self.model = self.model.bfloat16()
             
             # Get embedding dimension
             self.embedding_dim = self.model.visual.output_dim
@@ -57,31 +57,48 @@ class CLIPEncoder:
         image = Image.open(image_path).convert("RGB")
         image_input = self.preprocess(image).unsqueeze(0).to(self.device)
         
-        if self.device == "cuda":
-            image_input = image_input.half()
+        if self.device == "mps":
+            image_input = image_input.bfloat16()
             
         image_features = self.model.encode_image(image_input)
         image_features /= image_features.norm(dim=-1, keepdim=True)
-        return image_features.cpu().numpy()
+        return image_features.cpu().float().numpy()
 
     @torch.no_grad()
-    def encode_batch(self, image_paths):
+    def encode_batch(self, image_paths, batch_size=32):
         """
-        Encodes a batch of images into vectors.
+        Encodes a batch of images into vectors, chunked to prevent OOM/swapping on MPS.
         """
-        images = []
-        for path in image_paths:
-            img = Image.open(path).convert("RGB")
-            images.append(self.preprocess(img))
-            
-        image_input = torch.stack(images).to(self.device)
+        all_features = []
+        import numpy as np
         
-        if self.device == "cuda":
-            image_input = image_input.half()
+        total_images = len(image_paths)
+        print(f"  [CLIP Encoder] Starting extraction for {total_images} images (batch size: {batch_size})...")
+        
+        for i in range(0, total_images, batch_size):
+            batch_paths = image_paths[i:i + batch_size]
+            print(f"  [CLIP Encoder] Processing batch {i//batch_size + 1}/{(total_images + batch_size - 1)//batch_size} (images {i} to {min(i+batch_size, total_images)})...")
             
-        image_features = self.model.encode_image(image_input)
-        image_features /= image_features.norm(dim=-1, keepdim=True)
-        return image_features.cpu().numpy()
+            images = []
+            for path in batch_paths:
+                img = Image.open(path).convert("RGB")
+                images.append(self.preprocess(img))
+                
+            image_input = torch.stack(images).to(self.device)
+            
+            if self.device == "mps":
+                image_input = image_input.bfloat16()
+                
+            image_features = self.model.encode_image(image_input)
+            image_features /= image_features.norm(dim=-1, keepdim=True)
+            all_features.append(image_features.cpu().float().numpy())
+            
+            if self.device == "mps":
+                torch.mps.empty_cache()
+                
+        if len(all_features) > 0:
+            return np.concatenate(all_features, axis=0)
+        return np.array([])
 
 if __name__ == "__main__":
     # Test (requires weights)

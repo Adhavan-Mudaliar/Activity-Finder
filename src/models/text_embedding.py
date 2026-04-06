@@ -4,7 +4,7 @@ import os
 from src.models.clip_encoder import CLIPEncoder
 
 class TextEncoder:
-    def __init__(self, clip_encoder=None, model_name="ViT-L-14", pretrained="openai", device="cuda" if torch.cuda.is_available() else "cpu"):
+    def __init__(self, clip_encoder=None, model_name="ViT-L-14", pretrained="openai", device="mps" if torch.mps.is_available() else "cpu"):
         """
         Initializes the TextEncoder. If a clip_encoder is provided, it uses its model.
         """
@@ -19,7 +19,7 @@ class TextEncoder:
             )
             self.tokenizer = open_clip.get_tokenizer(model_name)
             self.model.eval()
-            if device == "cuda":
+            if device == "mps":
                 self.model = self.model.half()
 
     @torch.no_grad()
@@ -32,7 +32,7 @@ class TextEncoder:
         # OpenCLIP expects tokens
         text_features = self.model.encode_text(text_input)
         text_features /= text_features.norm(dim=-1, keepdim=True)
-        return text_features.cpu().numpy()
+        return text_features.cpu().float().numpy()
 
 if __name__ == "__main__":
     # Test

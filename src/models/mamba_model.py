@@ -42,7 +42,7 @@ class MambaBlock(nn.Module):
         x = F.silu(x)
 
         # Selective Scan (simplified)
-        # In a real MAMBA, this would be the S6 selective scan with CUDA kernels.
+        # In a real MAMBA, this would be the S6 selective scan with mps kernels.
         # Here we use a simplified version that still captures the essence.
         y = self.selective_scan(x)
 

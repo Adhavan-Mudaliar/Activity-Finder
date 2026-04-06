@@ -2,67 +2,85 @@ import numpy as np
 from scipy.ndimage import gaussian_filter
 
 class TemporalLocalizer:
-    def __init__(self, sigma=2.0, alpha=1.0):
-        """
-        sigma: Standard deviation for Gaussian smoothing.
-        alpha: Coefficient for dynamic threshold calculation.
-        """
+    def __init__(self, sigma=2.0, alpha=1.0, window_size=10, stride=5):
         self.sigma = sigma
         self.alpha = alpha
+        self.window_size = window_size
+        self.stride = stride
 
     def compute_frame_level_similarity(self, query_embedding, frame_embeddings):
-        """
-        query_embedding: (1, D)
-        frame_embeddings: (L, D)
-        Returns: Scores (L,)
-        """
         # (L, D) @ (D, 1) -> (L, 1)
-        # Assuming both are normalized
         scores = np.dot(frame_embeddings, query_embedding.T).squeeze()
+        if scores.ndim == 0:
+            scores = np.array([scores])
         return scores
 
-    def localize(self, scores, fps=1.0):
-        """
-        scores: Frame-level similarity scores (L,)
-        fps: Frames per second of extraction.
-        Returns: List of [start_time, end_time] segments.
-        """
-        if len(scores) == 0:
+    def _compute_hybrid_window_scores(self, frame_scores):
+        if len(frame_scores) <= self.window_size:
+            return np.array([np.mean(frame_scores)])
+            
+        windows = []
+        for i in range(0, len(frame_scores) - self.window_size + 1, self.stride):
+            windows.append(frame_scores[i:i + self.window_size])
+            
+        if (len(frame_scores) - self.window_size) % self.stride != 0:
+            windows.append(frame_scores[-self.window_size:])
+            
+        windows = np.array(windows)
+        
+        # w1: semantic similarity (mean score)
+        sem_sim = np.mean(windows, axis=1)
+        
+        # w2: temporal coherence (inverse of variance - smaller variance means more coherent)
+        variance = np.var(windows, axis=1)
+        temp_coh = np.exp(-variance * 10) # Exponential decay to scale to [0,1] roughly
+        
+        hybrid_scores = 0.6 * sem_sim + 0.2 * temp_coh
+        
+        # w3: neighbor agreement
+        final_scores = np.copy(hybrid_scores)
+        for i in range(1, len(hybrid_scores) - 1):
+            neighbor_avg = (hybrid_scores[i-1] + hybrid_scores[i+1]) / 2.0
+            final_scores[i] += 0.2 * neighbor_avg
+            
+        return final_scores
+
+    def localize(self, frame_scores, extraction_fps=1.0): # Usually 1 frame per 30 frames (which is ~1 fps)
+        if len(frame_scores) == 0:
             return []
 
-        # Step 2: Gaussian smoothing
-        smoothed_scores = gaussian_filter(scores, sigma=self.sigma)
+        # 1. Hybrid scoring over windows
+        hybrid_scores = self._compute_hybrid_window_scores(frame_scores)
         
-        # Step 3: Dynamic Threshold
+        # 2. Gaussian smoothing
+        smoothed_scores = gaussian_filter(hybrid_scores, sigma=self.sigma)
+        
+        # 3. Dynamic Threshold
         mean_score = np.mean(smoothed_scores)
         std_score = np.std(smoothed_scores)
         threshold = mean_score + self.alpha * std_score
         
-        # Step 4: Segment Grouping
+        # 4. Segment Grouping
         segments = []
         in_segment = False
-        start_frame = 0
+        start_idx = 0
         
         for i, score in enumerate(smoothed_scores):
             if score > threshold:
                 if not in_segment:
                     in_segment = True
-                    start_frame = i
+                    start_idx = i
             else:
                 if in_segment:
                     in_segment = False
-                    segments.append([start_frame / fps, i / fps])
+                    # convert window index to time
+                    start_time = (start_idx * self.stride) / extraction_fps
+                    end_time = (i * self.stride + self.window_size) / extraction_fps
+                    segments.append([start_time, end_time])
                     
-        # Add last segment if active
         if in_segment:
-            segments.append([start_frame / fps, len(smoothed_scores) / fps])
+            start_time = (start_idx * self.stride) / extraction_fps
+            end_time = (len(smoothed_scores) * self.stride + self.window_size) / extraction_fps
+            segments.append([start_time, end_time])
             
         return segments
-
-if __name__ == "__main__":
-    # Test
-    # localizer = TemporalLocalizer()
-    # scores = np.array([0.1, 0.2, 0.5, 0.8, 0.9, 0.8, 0.4, 0.2, 0.1])
-    # segs = localizer.localize(scores)
-    # print(segs)
-    pass

@@ -54,34 +54,114 @@ def calculate_iou(pred, gt):
 def download_video(video_id, save_path):
     import subprocess
     url = f"https://www.youtube.com/watch?v={video_id}"
-    # Added --no-check-certificate and --prefer-free-formats for stability
-    cmd = ["yt-dlp", "-f", "best[height<=360]", "--no-check-certificate", "-o", save_path, url]
+    # Use python -m yt_dlp for absolute path safety in venv
+    cmd = [
+        sys.executable, "-m", "yt_dlp",
+        "-f", "best[height<=360]",
+        "--no-check-certificate",
+        "--socket-timeout", "5",
+        "--retries", "1",
+        "-o", save_path,
+        url
+    ]
     try:
         subprocess.run(cmd, capture_output=True, check=True)
         return True
     except:
         return False
 
-def run_benchmark():
+def setup_data(target_duration_minutes=120):
     os.makedirs(DATA_DIR, exist_ok=True)
     video_dir = os.path.join(DATA_DIR, "videos")
     os.makedirs(video_dir, exist_ok=True)
+    
+    meta_path = os.path.join(DATA_DIR, "activitynet_v1-3.json")
+    
+    # Clean up empty or broken metadata files from previous run
+    if os.path.exists(meta_path) and os.path.getsize(meta_path) < 1000:
+        os.remove(meta_path)
+        
+    if not os.path.exists(meta_path):
+        print("📥 Downloading ActivityNet Metadata (Official Mirror)...")
+        # Fixed URL (found inside Evaluation/data/ directory)
+        url = "https://raw.githubusercontent.com/activitynet/ActivityNet/master/Evaluation/data/activity_net.v1-3.min.json"
+        
+        try:
+            r = requests.get(url)
+            r.raise_for_status()
+            raw_data = r.json()
+            if isinstance(raw_data, list):
+                data = {v['id']: v for v in raw_data}
+            elif 'database' in raw_data:
+                data = raw_data['database']
+            else:
+                data = raw_data
+            
+            with open(meta_path, "w") as f:
+                json.dump(data, f)
+        except Exception as e:
+            print(f"❌ Failed to download or parse metadata: {e}")
+            sys.exit(1)
+    else:
+        try:
+            with open(meta_path, "r") as f:
+                data = json.load(f)
+        except json.JSONDecodeError:
+            print("❌ Existing metadata file is corrupted. Deleting and re-running.")
+            os.remove(meta_path)
+            return setup_data(target_duration_minutes)
+
+    print(f"📡 Gathering {target_duration_minutes} minutes of clean video...")
+    
+    # Filter to validation set
+    val_set = {k: v for k, v in data.items() if v.get("subset") == "validation"}
+    
+    accumulated_duration = 0.0
+    target_seconds = target_duration_minutes * 60
+    selected_videos = {}
+    
+    # Check existing videos first
+    for vid_id, info in val_set.items():
+        save_path = os.path.join(video_dir, f"{vid_id}.mp4")
+        if os.path.exists(save_path):
+            duration = info.get("duration", 180.0)
+            accumulated_duration += duration
+            selected_videos[vid_id] = info
+    
+    # Download more if needed
+    for vid_id, info in val_set.items():
+        if accumulated_duration >= target_seconds:
+            break
+        if vid_id in selected_videos:
+            continue
+            
+        save_path = os.path.join(video_dir, f"{vid_id}.mp4")
+        print(f"  🎬 Trying to download {vid_id}...")
+        
+        if download_video(vid_id, save_path):
+            duration = info.get("duration", 180.0)
+            accumulated_duration += duration
+            selected_videos[vid_id] = info
+            print(f"  ✅ Success. Total gathered: {accumulated_duration/60:.1f} / {target_duration_minutes} minutes.")
+        else:
+            print(f"  ❌ Failed (Video Removed). Skipping.")
+
+    print(f"\n✅ Ready! Gathered {len(selected_videos)} videos ({accumulated_duration/60:.1f} minutes).")
+    return selected_videos
+
+def run_benchmark():
+    selected_data = setup_data(target_duration_minutes=120)
+    video_dir = os.path.join(DATA_DIR, "videos")
 
     device = "mps" if torch.mps.is_available() else "cpu"
-    print(f"📥 Initializing AI Engines on {device}...")
+    print(f"\n📥 Initializing AI Engines on {device}...")
     clip_encoder = CLIPEncoder(device=device)
     processor = VideoProcessor(device=device, clip_encoder=clip_encoder)
     
     # 1. Download and Index
-    print(f"\n🏗️  Step 1: Processing {len(CURATED_DATA)} Stable Long Clips...")
-    for vid_id, info in CURATED_DATA.items():
+    print(f"\n🏗️  Step 1: Processing {len(selected_data)} Stable Long Clips...")
+    for vid_id, info in selected_data.items():
         save_path = os.path.join(video_dir, f"{vid_id}.mp4")
-        if not os.path.exists(save_path):
-            print(f"🎬 Downloading '{info['title']}'...")
-            if not download_video(vid_id, save_path):
-                print(f"  ❌ Download failed for {vid_id}. Skipping.")
-                continue
-        
         processor.process_new_video(save_path, vid_id)
 
     # 2. Evaluate
@@ -92,10 +172,19 @@ def run_benchmark():
     # SUCCESS WINDOW: How many seconds away counts as "Nearby"?
     NEARBY_THRESHOLD = 10.0 
 
-    for vid_id, info in CURATED_DATA.items():
+    for vid_id, info in selected_data.items():
         if not os.path.exists(os.path.join(video_dir, f"{vid_id}.mp4")): continue
             
-        for gt_segment, sentence in zip(info['timestamps'], info['sentences']):
+        # Parse official ActivityNet annotations format
+        annotations = info.get("annotations", [])
+        if not annotations:
+            continue
+            
+        for ann in annotations:
+            gt_segment = ann["segment"]
+            sentence = ann["label"]  # Using the general label as query, or if you have captions, use them.
+            if not sentence: continue
+
             search_results = engine.search(sentence, top_k=5)
             
             in_scene = False
@@ -139,7 +228,7 @@ def run_benchmark():
     print("\n" + "📺" * 45)
     print("      NETFLIX-STYLE 'JUMP TO SCENE' BENCHMARK")
     print("📺" * 45)
-    print(f"Videos Processed:     {len(CURATED_DATA)}")
+    print(f"Videos Processed:     {len(selected_data)}")
     print(f"Queries Run:          {total}")
     print("-" * 45)
     print(f"Video Retrieval:      {vid_rec:.2f}% (Found the right movie)")

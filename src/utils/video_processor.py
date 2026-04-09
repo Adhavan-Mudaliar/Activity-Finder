@@ -53,6 +53,10 @@ class VideoProcessor:
 
         embeddings = self.clip_encoder.encode_batch(frame_paths)   # (N, 768)
 
+        if embeddings.shape[0] == 0:
+            print(f"⚠️  No embeddings extracted for {video_id}. Skipping indexing...")
+            return False
+
         # Persist raw per-frame embeddings for the localizer
         self.storage.save_embeddings(video_id, embeddings)
 
